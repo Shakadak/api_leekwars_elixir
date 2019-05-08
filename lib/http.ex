@@ -1,63 +1,65 @@
 defmodule Http do
   @moduledoc """
-  Facilities for httpc.
+  Facilities for Mint.
   """
 
   def get(url, opts \\ []) do
-    request(Enum.into(opts, method: :get, url: url))
+    request(Keyword.merge(opts, method: :get, url: url))
   end
 
   def post(url, opts \\ []) do
-    request(Enum.into(opts, method: :post, url: url))
+    request(Keyword.merge(opts, method: :post, url: url))
   end
 
-  def post(url, content_type, payload, opts \\ []) do
-    request(
-      Enum.into(opts, method: :post, url: url, content_type: content_type, payload: payload)
-    )
+  def post(url, content_type, body, opts \\ []) do
+    req_opts = [method: :post, url: url, content_type: content_type, body: body]
+    request(Keyword.merge(opts, req_opts))
   end
 
   def put(url, opts \\ []) do
-    request(Enum.into(opts, method: :put, url: url))
+    request(Keyword.merge(opts, method: :put, url: url))
   end
 
-  def put(url, content_type, payload, opts \\ []) do
-    request(Enum.into(opts, method: :put, url: url, content_type: content_type, payload: payload))
+  def put(url, content_type, body, opts \\ []) do
+    req_opts = [method: :put, url: url, content_type: content_type, body: body]
+    request(Keyword.merge(opts, req_opts))
   end
 
   def request(opts) do
-    method = fetch!(opts, :method)
-    url = fetch!(opts, :url)
-    headers = Access.get(opts, :headers, [])
-    content_type = Access.get(opts, :content_type, '')
-    payload = Access.get(opts, :payload, "")
-    http_options = Access.get(opts, :http_options, [])
-    options = Access.get(opts, :options, [])
-
-    request =
-      case {to_charlist(content_type), payload} do
-        {'', ""} -> {url, headers}
-        {content_type, payload} -> {url, headers, content_type, payload}
+    opts = Map.new(opts)
+    method = String.upcase(to_string(opts.method))
+    uri = URI.parse(opts.url)
+    headers =
+      case opts do
+        %{headers: xs, content_type: x} -> [{"content-type", x} | xs]
+        %{headers: xs} -> xs
+        %{content_type: x} -> [{"content-type", x}]
       end
+    
+    body = Map.get(opts, :body, nil)
 
-    case :httpc.request(method, request, http_options, options) do
-      {:error, _} = x ->
-        x
-
-      {:ok, {status_code, body}} ->
-        result = %{status_code: status_code, body: body}
-        {:ok, result}
-
-      {:ok, {{_, status_code, reason_phrase}, headers, body}} ->
-        result = %{
-          status_code: status_code,
-          reason_phrase: reason_phrase,
-          headers: headers,
-          body: body
-        }
-
-        {:ok, result}
+    scheme = case uri do
+      %URI{scheme: "https"} -> :https
+      %URI{scheme: "http"} -> :http
     end
+    path = case uri do
+      %URI{path: path, query: nil} -> path
+      %URI{path: path, query: query} -> "#{path}?#{query}"
+    end
+
+    opts = Map.drop(opts, [:method, :url, :headers, :content_type, :body])
+    opts = Map.to_list(opts)
+
+    {:ok, conn} =
+      Mint.HTTP.connect(scheme, uri.host, uri.port, opts)
+
+    {:ok, conn, _request_ref} =
+      Mint.HTTP.request(conn, method, path, headers, body)
+
+    {conn, response} = iterate_messages(conn, %{})
+    {:ok, _} = Mint.HTTP.close(conn)
+
+    response
   end
 
   # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -68,4 +70,23 @@ defmodule Http do
       :error -> raise(KeyError, key: k, term: t)
     end
   end
+
+  def iterate_messages(conn, %{done: true} = state), do: {conn, state}
+
+  def iterate_messages(conn, state) do
+    receive do
+      message ->
+        {:ok, conn, xs} = Mint.HTTP.stream(conn, message)
+        state = Enum.reduce(xs, state, &iterate_responses/2)
+        iterate_messages(conn, state)
+    end
+  end
+
+  def iterate_responses({:status, _, status}, state), do: Map.put(state, :status, status)
+  def iterate_responses({:headers, _, headers}, state), do: Map.put(state, :headers, headers)
+
+  def iterate_responses({:data, _, data}, state),
+    do: Map.update(state, :data, data, fn acc -> acc <> data end)
+
+  def iterate_responses({:done, _}, state), do: Map.put(state, :done, true)
 end
