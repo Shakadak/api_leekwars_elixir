@@ -22,6 +22,7 @@ defmodule ApiLeekwars.MixProject do
   defp deps do
     [
       {:castore, "~> 0.1.1"},
+      {:cookie, "~> 0.1.1"},
       {:mint, "~> 0.2.1"},
       {:poison, "~> 4.0"}
     ]

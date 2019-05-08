@@ -35,6 +35,7 @@ defmodule Http do
         %{headers: xs} -> xs
         %{content_type: x} -> [{"content-type", x}]
       end
+    headers = Enum.map(headers, fn {k, v} -> {to_string(k), v} end)
     
     body = Map.get(opts, :body, nil)
 
